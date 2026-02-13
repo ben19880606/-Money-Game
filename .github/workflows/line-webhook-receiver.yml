@@ -1,0 +1,58 @@
+name: LINE Webhook Receiver
+
+on:
+  repository_dispatch:
+    types: [line_webhook]
+  workflow_dispatch:
+
+jobs:
+  process-webhook:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+      
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
+      
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install supabase python-dotenv requests
+      
+      - name: Process LINE webhook
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          LINE_CHANNEL_ACCESS_TOKEN: ${{ secrets.LINE_CHANNEL_ACCESS_TOKEN }}
+          LINE_CHANNEL_SECRET: ${{ secrets.LINE_CHANNEL_SECRET }}
+        run: |
+          python scripts/line_webhook_processor.py
+      
+      - name: Log webhook processing
+        run: |
+          echo "✅ Webhook processed at $(date)"
+          
+      - name: Send alert on error
+        if: failure()
+        env:
+          SMTP_USERNAME: ${{ secrets.SMTP_USERNAME }}
+          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+          ALERT_EMAIL: ${{ secrets.ALERT_EMAIL }}
+        run: |
+          python -c "
+          import smtplib
+          from email.mime.text import MIMEText
+          
+          msg = MIMEText('LINE Webhook processing failed!')
+          msg['Subject'] = '❌ LINE Webhook Processing Failed'
+          msg['From'] = '${{ secrets.SMTP_USERNAME }}'
+          msg['To'] = '${{ secrets.ALERT_EMAIL }}'
+          
+          with smtplib.SMTP_SSL('smtp.gmail.com', 465) as server:
+              server.login('${{ secrets.SMTP_USERNAME }}', '${{ secrets.SMTP_PASSWORD }}')
+              server.send_message(msg)
+          "
