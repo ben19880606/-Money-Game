@@ -29,26 +29,4 @@ jobs:
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
           LINE_CHANNEL_ACCESS_TOKEN: ${{ secrets.LINE_CHANNEL_ACCESS_TOKEN }}
           LINE_CHANNEL_SECRET: ${{ secrets.LINE_CHANNEL_SECRET }}
-        run: |
-          python scripts/line_loan_notifier.py
-      
-      - name: Send error alert (if failed)
-        if: failure()
-        env:
-          SMTP_USERNAME: ${{ secrets.SMTP_USERNAME }}
-          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
-          ALERT_EMAIL: ${{ secrets.ALERT_EMAIL }}
-        run: |
-          python -c "
-          import smtplib
-          from email.mime.text import MIMEText
-          
-          msg = MIMEText('LINE Loan Notification job failed!')
-          msg['Subject'] = '❌ LINE Notification Job Failed'
-          msg['From'] = '${{ secrets.SMTP_USERNAME }}'
-          msg['To'] = '${{ secrets.ALERT_EMAIL }}'
-          
-          with smtplib.SMTP_SSL('smtp.gmail.com', 465) as server:
-              server.login('${{ secrets.SMTP_USERNAME }}', '${{ secrets.SMTP_PASSWORD }}')
-              server.send_message(msg)
-          "
+        run: python scripts/line_loan_notifier.py
