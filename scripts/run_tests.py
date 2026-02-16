@@ -122,6 +122,8 @@ def test_file_structure():
         '.github/workflows/line-webhook-receiver.yml',
     ]
     
+    # Note: The nested scripts/scripts/ directory structure is intentional
+    # and matches the existing repository layout
     required_scripts = [
         'scripts/config_validator.py',
         'scripts/supabase_db_setup.py',
