@@ -1,0 +1,216 @@
+name: Weekly Member Report
+
+on:
+  schedule:
+    # Every Monday at 8:00 AM UTC
+    - cron: '0 8 * * 1'
+  workflow_dispatch:
+
+jobs:
+  generate-report:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+      
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+      
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      
+      - name: Generate weekly report
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: |
+          python << 'EOF'
+          import os
+          from datetime import datetime, timedelta
+          from supabase import create_client, Client
+          
+          SUPABASE_URL = os.environ.get("SUPABASE_URL")
+          SUPABASE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
+          
+          supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+          
+          print("📊 開始生成周會員統計報告...")
+          
+          try:
+              # 計算本周日期範圍（週一到週日）
+              today = datetime.utcnow()
+              # 找到本週一
+              days_since_monday = today.weekday()
+              week_start = (today - timedelta(days=days_since_monday)).replace(hour=0, minute=0, second=0, microsecond=0)
+              week_end = week_start + timedelta(days=7)
+              
+              print(f"📅 報告週期: {week_start.strftime('%Y-%m-%d')} ~ {week_end.strftime('%Y-%m-%d')}")
+              
+              # 1. 本週新加入的借款人
+              borrower_response = supabase.table("profiles").select(
+                  "id, email, created_at"
+              ).eq(
+                  "membership_type", "borrower"
+              ).gte(
+                  "created_at", week_start.isoformat()
+              ).lt(
+                  "created_at", week_end.isoformat()
+              ).execute()
+              
+              new_borrowers = len(borrower_response.data) if borrower_response.data else 0
+              
+              # 2. 本週新加入的金主
+              lender_response = supabase.table("profiles").select(
+                  "id, email, created_at"
+              ).eq(
+                  "membership_type", "lender"
+              ).gte(
+                  "created_at", week_start.isoformat()
+              ).lt(
+                  "created_at", week_end.isoformat()
+              ).execute()
+              
+              new_lenders = len(lender_response.data) if lender_response.data else 0
+              
+              # 3. 本週已激活的金主
+              activated_response = supabase.table("profiles").select(
+                  "id, email, activated_at, membership_tier"
+              ).eq(
+                  "membership_type", "lender"
+              ).eq(
+                  "payment_verified", "YES"
+              ).gte(
+                  "activated_at", week_start.isoformat()
+              ).lt(
+                  "activated_at", week_end.isoformat()
+              ).execute()
+              
+              activated_lenders = len(activated_response.data) if activated_response.data else 0
+              
+              # 4. 待激活金主（已支付但未激活）
+              pending_response = supabase.table("profiles").select(
+                  "id, email, payment_last_five_digits"
+              ).eq(
+                  "membership_type", "lender"
+              ).eq(
+                  "payment_verified", "NO"
+              ).not_.is_(
+                  "payment_last_five_digits", "null"
+              ).execute()
+              
+              pending_lenders = len(pending_response.data) if pending_response.data else 0
+              
+              # 5. 平台總會員數
+              all_members_response = supabase.table("profiles").select("id").execute()
+              total_members = len(all_members_response.data) if all_members_response.data else 0
+              
+              # 6. 計算激活率
+              activation_rate = (activated_lenders / new_lenders * 100) if new_lenders > 0 else 0
+              
+              # 輸出報告
+              print("\n" + "="*60)
+              print("【本週新加入會員】")
+              print(f"├─ 借款人(Borrower): {new_borrowers} 位")
+              print(f"└─ 金主(Lender): {new_lenders} 位")
+              print()
+              print("【金主會員激活情況】")
+              print(f"├─ 已激活金主: {activated_lenders} 位")
+              print(f"├─ 待激活金主: {pending_lenders} 位")
+              print(f"└─ 激活率: {activation_rate:.1f}%")
+              print()
+              print("【平台整體數據】")
+              print(f"├─ 平台總會員數: {total_members} 位")
+              print(f"└─ 報告週期: {week_start.strftime('%Y-%m-%d')} ~ {week_end.strftime('%Y-%m-%d')}")
+              print()
+              print("【系統狀態】")
+              print("└─ ✅ 系統運行正常")
+              print("="*60)
+              
+              # 保存報告數據供郵件使用
+              with open("/tmp/report_data.txt", "w", encoding="utf-8") as f:
+                  f.write(f"{new_borrowers},{new_lenders},{activated_lenders},{pending_lenders},{total_members},{activation_rate:.1f},{week_start.strftime('%Y-%m-%d')},{week_end.strftime('%Y-%m-%d')}")
+              
+              print("\n✅ 報告生成完成!")
+              
+          except Exception as e:
+              print(f"❌ 錯誤: {e}")
+              exit(1)
+          EOF
+      
+      - name: Send weekly report email
+        env:
+          SMTP_USERNAME: ${{ secrets.SMTP_USERNAME }}
+          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+          ALERT_EMAIL: ${{ secrets.ALERT_EMAIL }}
+        run: |
+          python << 'EOF'
+          import os
+          import smtplib
+          from email.mime.text import MIMEText
+          from email.mime.multipart import MIMEMultipart
+          from datetime import datetime
+          
+          try:
+              smtp_user = os.environ.get("SMTP_USERNAME")
+              smtp_pass = os.environ.get("SMTP_PASSWORD")
+              alert_email = os.environ.get("ALERT_EMAIL", "aijinetwork@gmail.com")
+              
+              if not smtp_user or not smtp_pass:
+                  print("⚠️  郵件配置未設置，跳過發送報告")
+                  exit(0)
+              
+              # 讀取報告數據
+              with open("/tmp/report_data.txt", "r", encoding="utf-8") as f:
+                  data = f.read().strip().split(",")
+                  new_borrowers, new_lenders, activated_lenders, pending_lenders, total_members, activation_rate, week_start, week_end = data
+              
+              msg = MIMEMultipart()
+              msg['Subject'] = '[Money-Game] 周會員統計報告'
+              msg['From'] = smtp_user
+              msg['To'] = alert_email
+              
+              body = f"""
+【Money-Game 周會員統計報告】
+
+生成時間：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+
+{'='*60}
+
+【本週新加入會員】
+├─ 借款人(Borrower): {new_borrowers} 位
+└─ 金主(Lender): {new_lenders} 位
+
+【金主會員激活情況】
+├─ 已激活金主: {activated_lenders} 位
+├─ 待激活金主: {pending_lenders} 位
+└─ 激活率: {activation_rate}%
+
+【平台整體數據】
+├─ 平台總會員數: {total_members} 位
+└─ 報告週期: {week_start} ~ {week_end}
+
+【系統狀態】
+└─ ✅ 系統運行正常
+
+{'='*60}
+
+---
+Money-Game 自動化系統
+https://axnihao.com
+              """
+              
+              msg.attach(MIMEText(body, 'plain', 'utf-8'))
+              
+              with smtplib.SMTP_SSL('smtp.gmail.com', 465) as server:
+                  server.login(smtp_user, smtp_pass)
+                  server.send_message(msg)
+              
+              print("✅ 周報告郵件已發送")
+          except Exception as e:
+              print(f"⚠️  發送報告失敗: {e}")
+          EOF

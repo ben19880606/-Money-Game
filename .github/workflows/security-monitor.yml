@@ -1,0 +1,233 @@
+name: Security Monitor
+
+on:
+  schedule:
+    # Run every 6 hours
+    - cron: '0 */6 * * *'
+  workflow_dispatch:
+
+jobs:
+  security-check:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+      
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+      
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      
+      - name: Check website security
+        id: security_check
+        run: |
+          python << 'EOF'
+          import requests
+          import ssl
+          import socket
+          from datetime import datetime
+          from urllib.parse import urlparse
+          
+          WEBSITE_URL = "https://axnihao.com"
+          
+          print(f"🔒 開始安全檢查: {WEBSITE_URL}")
+          print(f"檢查時間: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+          
+          issues = []
+          
+          # 1. 網站可用性檢查
+          print("【1】網站可用性檢查")
+          try:
+              response = requests.get(WEBSITE_URL, timeout=10, verify=True)
+              status_code = response.status_code
+              
+              if status_code == 200:
+                  print(f"  ✅ 網站正常訪問 (HTTP {status_code})")
+              elif 300 <= status_code < 400:
+                  print(f"  ⚠️  網站重定向 (HTTP {status_code})")
+              else:
+                  print(f"  ❌ 網站異常 (HTTP {status_code})")
+                  issues.append(f"HTTP狀態碼異常: {status_code}")
+                  
+              # 檢查響應時間
+              response_time = response.elapsed.total_seconds()
+              if response_time > 3:
+                  print(f"  ⚠️  響應時間較慢: {response_time:.2f}秒")
+                  issues.append(f"響應時間過長: {response_time:.2f}秒")
+              else:
+                  print(f"  ✅ 響應時間正常: {response_time:.2f}秒")
+                  
+          except requests.exceptions.Timeout:
+              print("  ❌ 連接超時")
+              issues.append("網站連接超時")
+          except requests.exceptions.ConnectionError:
+              print("  ❌ 連接失敗")
+              issues.append("無法連接到網站")
+          except Exception as e:
+              print(f"  ❌ 檢查失敗: {e}")
+              issues.append(f"可用性檢查失敗: {e}")
+          
+          print()
+          
+          # 2. SSL 證書檢查
+          print("【2】SSL 證書檢查")
+          try:
+              hostname = urlparse(WEBSITE_URL).netloc
+              context = ssl.create_default_context()
+              
+              with socket.create_connection((hostname, 443), timeout=10) as sock:
+                  with context.wrap_socket(sock, server_hostname=hostname) as ssock:
+                      cert = ssock.getpeercert()
+                      
+                      # 檢查證書有效期
+                      not_after = datetime.strptime(cert['notAfter'], '%b %d %H:%M:%S %Y %Z')
+                      days_until_expiry = (not_after - datetime.now()).days
+                      
+                      if days_until_expiry < 0:
+                          print(f"  ❌ SSL 證書已過期")
+                          issues.append("SSL證書已過期")
+                      elif days_until_expiry < 30:
+                          print(f"  ⚠️  SSL 證書即將過期 (剩餘 {days_until_expiry} 天)")
+                          issues.append(f"SSL證書即將過期: 剩餘{days_until_expiry}天")
+                      else:
+                          print(f"  ✅ SSL 證書有效 (剩餘 {days_until_expiry} 天)")
+                      
+                      print(f"  ✅ SSL 連接正常")
+                      
+          except ssl.SSLError as e:
+              print(f"  ❌ SSL 錯誤: {e}")
+              issues.append(f"SSL錯誤: {e}")
+          except Exception as e:
+              print(f"  ⚠️  SSL 檢查失敗: {e}")
+          
+          print()
+          
+          # 3. 內容異常檢查
+          print("【3】內容異常檢查")
+          try:
+              response = requests.get(WEBSITE_URL, timeout=10)
+              content = response.text.lower()
+              
+              # 檢查常見的錯誤關鍵詞
+              error_keywords = {
+                  "sql error": "SQL錯誤",
+                  "database error": "數據庫錯誤",
+                  "fatal error": "致命錯誤",
+                  "warning:": "PHP警告",
+                  "notice:": "PHP提示",
+                  "syntax error": "語法錯誤",
+                  "connection failed": "連接失敗",
+                  "access denied": "訪問被拒",
+              }
+              
+              found_issues = []
+              for keyword, description in error_keywords.items():
+                  if keyword in content:
+                      found_issues.append(description)
+              
+              if found_issues:
+                  print(f"  ❌ 檢測到異常內容:")
+                  for issue in found_issues:
+                      print(f"     - {issue}")
+                      issues.append(f"內容異常: {issue}")
+              else:
+                  print(f"  ✅ 未檢測到異常內容")
+                  
+          except Exception as e:
+              print(f"  ⚠️  內容檢查失敗: {e}")
+          
+          print()
+          
+          # 總結
+          print("="*60)
+          if not issues:
+              print("【檢查結果】✅ 所有檢查通過，網站運行正常")
+              with open("/tmp/security_status.txt", "w") as f:
+                  f.write("OK")
+          else:
+              print(f"【檢查結果】❌ 發現 {len(issues)} 個問題:")
+              for i, issue in enumerate(issues, 1):
+                  print(f"  {i}. {issue}")
+              with open("/tmp/security_status.txt", "w") as f:
+                  f.write("ISSUES")
+              with open("/tmp/security_issues.txt", "w", encoding="utf-8") as f:
+                  f.write("\n".join(issues))
+          print("="*60)
+          EOF
+      
+      - name: Send alert if issues found
+        if: always()
+        env:
+          SMTP_USERNAME: ${{ secrets.SMTP_USERNAME }}
+          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+          ALERT_EMAIL: ${{ secrets.ALERT_EMAIL }}
+        run: |
+          python << 'EOF'
+          import os
+          import smtplib
+          from email.mime.text import MIMEText
+          from email.mime.multipart import MIMEMultipart
+          from datetime import datetime
+          
+          try:
+              # 檢查是否有問題
+              with open("/tmp/security_status.txt", "r") as f:
+                  status = f.read().strip()
+              
+              smtp_user = os.environ.get("SMTP_USERNAME")
+              smtp_pass = os.environ.get("SMTP_PASSWORD")
+              alert_email = os.environ.get("ALERT_EMAIL", "aijinetwork@gmail.com")
+              
+              if not smtp_user or not smtp_pass:
+                  print("⚠️  郵件配置未設置，跳過發送告警")
+                  exit(0)
+              
+              if status == "ISSUES":
+                  # 讀取問題列表
+                  with open("/tmp/security_issues.txt", "r", encoding="utf-8") as f:
+                      issues = f.read()
+                  
+                  msg = MIMEMultipart()
+                  msg['Subject'] = '⚠️ [Money-Game] 網站安全警告'
+                  msg['From'] = smtp_user
+                  msg['To'] = alert_email
+                  
+                  body = f"""
+【Money-Game 安全監控告警】
+
+檢查時間：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+網站地址：https://axnihao.com
+
+⚠️  發現以下安全問題：
+
+{issues}
+
+{'='*60}
+
+請立即檢查網站狀態並採取相應措施。
+
+---
+Money-Game 自動化安全監控系統
+                  """
+                  
+                  msg.attach(MIMEText(body, 'plain', 'utf-8'))
+                  
+                  with smtplib.SMTP_SSL('smtp.gmail.com', 465) as server:
+                      server.login(smtp_user, smtp_pass)
+                      server.send_message(msg)
+                  
+                  print("✅ 安全告警郵件已發送")
+              else:
+                  print("✅ 無需發送告警，網站運行正常")
+                  
+          except FileNotFoundError:
+              print("⚠️  未找到安全檢查結果文件")
+          except Exception as e:
+              print(f"⚠️  發送告警失敗: {e}")
+          EOF
