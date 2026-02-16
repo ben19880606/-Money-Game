@@ -13,8 +13,8 @@ python-dotenv==1.0.0
 python-dateutil==2.8.2
 
 # Security & SSL Verification
-certifi==2023.11.17
-urllib3==2.1.0
+certifi==2024.2.2
+urllib3==2.6.3  # Updated to fix CVE vulnerabilities (decompression-bomb, streaming API issues)
 
 # LINE Messaging API (optional, for advanced features)
 line-bot-sdk==3.5.0
