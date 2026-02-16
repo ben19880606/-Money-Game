@@ -174,35 +174,27 @@ jobs:
               msg['From'] = smtp_user
               msg['To'] = alert_email
               
-              body = f"""
-【Money-Game 周會員統計報告】
-
-生成時間：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
-
-{'='*60}
-
-【本週新加入會員】
-├─ 借款人(Borrower): {new_borrowers} 位
-└─ 金主(Lender): {new_lenders} 位
-
-【金主會員激活情況】
-├─ 已激活金主: {activated_lenders} 位
-├─ 待激活金主: {pending_lenders} 位
-└─ 激活率: {activation_rate}%
-
-【平台整體數據】
-├─ 平台總會員數: {total_members} 位
-└─ 報告週期: {week_start} ~ {week_end}
-
-【系統狀態】
-└─ ✅ 系統運行正常
-
-{'='*60}
-
----
-Money-Game 自動化系統
-https://axnihao.com
-              """
+              body = (
+                  "【Money-Game 周會員統計報告】\n\n"
+                  f"生成時間：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
+                  "="*60 + "\n\n"
+                  "【本週新加入會員】\n"
+                  f"├─ 借款人(Borrower): {new_borrowers} 位\n"
+                  f"└─ 金主(Lender): {new_lenders} 位\n\n"
+                  "【金主會員激活情況】\n"
+                  f"├─ 已激活金主: {activated_lenders} 位\n"
+                  f"├─ 待激活金主: {pending_lenders} 位\n"
+                  f"└─ 激活率: {activation_rate}%\n\n"
+                  "【平台整體數據】\n"
+                  f"├─ 平台總會員數: {total_members} 位\n"
+                  f"└─ 報告週期: {week_start} ~ {week_end}\n\n"
+                  "【系統狀態】\n"
+                  "└─ ✅ 系統運行正常\n\n"
+                  "="*60 + "\n\n"
+                  "---\n"
+                  "Money-Game 自動化系統\n"
+                  "https://axnihao.com\n"
+              )
               
               msg.attach(MIMEText(body, 'plain', 'utf-8'))
               

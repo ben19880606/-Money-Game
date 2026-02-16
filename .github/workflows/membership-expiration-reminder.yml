@@ -176,19 +176,15 @@ jobs:
                   msg['From'] = smtp_user
                   msg['To'] = alert_email
                   
-                  body = f"""
-【Money-Game 會員到期提醒報告】
-
-執行時間：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
-
-即將到期會員數：{expiring_count}
-成功發送提醒：{reminded_count}
-
-請關注會員續約情況。
-
----
-Money-Game 自動化系統
-                  """
+                  body = (
+                      "【Money-Game 會員到期提醒報告】\n\n"
+                      f"執行時間：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
+                      f"即將到期會員數：{expiring_count}\n"
+                      f"成功發送提醒：{reminded_count}\n\n"
+                      "請關注會員續約情況。\n\n"
+                      "---\n"
+                      "Money-Game 自動化系統\n"
+                  )
                   
                   msg.attach(MIMEText(body, 'plain', 'utf-8'))
                   

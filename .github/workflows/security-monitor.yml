@@ -198,23 +198,17 @@ jobs:
                   msg['From'] = smtp_user
                   msg['To'] = alert_email
                   
-                  body = f"""
-【Money-Game 安全監控告警】
-
-檢查時間：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
-網站地址：https://axnihao.com
-
-⚠️  發現以下安全問題：
-
-{issues}
-
-{'='*60}
-
-請立即檢查網站狀態並採取相應措施。
-
----
-Money-Game 自動化安全監控系統
-                  """
+                  body = (
+                      "【Money-Game 安全監控告警】\n\n"
+                      f"檢查時間：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+                      "網站地址：https://axnihao.com\n\n"
+                      "⚠️  發現以下安全問題：\n\n"
+                      f"{issues}\n\n"
+                      "="*60 + "\n\n"
+                      "請立即檢查網站狀態並採取相應措施。\n\n"
+                      "---\n"
+                      "Money-Game 自動化安全監控系統\n"
+                  )
                   
                   msg.attach(MIMEText(body, 'plain', 'utf-8'))
                   
