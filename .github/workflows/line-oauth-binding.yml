@@ -1,0 +1,84 @@
+name: LINE OAuth Binding
+
+on:
+  repository_dispatch:
+    types: [line_follow_event]
+  workflow_dispatch:
+    inputs:
+      webhook_body:
+        description: 'LINE Webhook JSON body (for manual testing)'
+        required: false
+        default: ''
+      webhook_signature:
+        description: 'X-Line-Signature header value (for manual testing)'
+        required: false
+        default: ''
+
+jobs:
+  bind-line-user:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install supabase python-dotenv requests
+
+      - name: Run LINE binding handler
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          LINE_CHANNEL_ID: ${{ secrets.LINE_CHANNEL_ID }}
+          LINE_CHANNEL_SECRET: ${{ secrets.LINE_CHANNEL_SECRET }}
+          LINE_CHANNEL_ACCESS_TOKEN: ${{ secrets.LINE_CHANNEL_ACCESS_TOKEN }}
+          SMTP_USERNAME: ${{ secrets.SMTP_USERNAME }}
+          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+          # repository_dispatch payload is in github.event.client_payload
+          LINE_WEBHOOK_BODY: ${{ github.event.client_payload.body || inputs.webhook_body }}
+          LINE_WEBHOOK_SIGNATURE: ${{ github.event.client_payload.signature || inputs.webhook_signature }}
+        run: |
+          python scripts/line_binding_handler.py
+
+      - name: Log binding result
+        run: |
+          echo "✅ LINE binding handler completed at $(date)"
+
+      - name: Send alert on error
+        if: failure()
+        env:
+          SMTP_USERNAME: ${{ secrets.SMTP_USERNAME }}
+          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+          ALERT_EMAIL: ${{ secrets.ALERT_EMAIL }}
+        run: |
+          python -c "
+          import smtplib, os
+          from email.mime.text import MIMEText
+
+          smtp_user = os.environ.get('SMTP_USERNAME', '')
+          smtp_pass = os.environ.get('SMTP_PASSWORD', '')
+          alert_email = os.environ.get('ALERT_EMAIL', '')
+
+          if not (smtp_user and smtp_pass and alert_email):
+              print('SMTP credentials not configured; skipping alert email.')
+              exit(0)
+
+          msg = MIMEText('LINE OAuth binding workflow failed. Check GitHub Actions logs for details.')
+          msg['Subject'] = '❌ LINE OAuth Binding Failed'
+          msg['From'] = smtp_user
+          msg['To'] = alert_email
+
+          with smtplib.SMTP_SSL('smtp.gmail.com', 465) as server:
+              server.login(smtp_user, smtp_pass)
+              server.send_message(msg)
+          print('Alert email sent.')
+          "
