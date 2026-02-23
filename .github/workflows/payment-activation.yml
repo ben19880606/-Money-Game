@@ -1,0 +1,56 @@
+name: Payment Activation
+
+on:
+  schedule:
+    - cron: '0 * * * *'   # Run every hour
+  workflow_dispatch:
+
+jobs:
+  activate-members:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install supabase python-dotenv
+
+      - name: Run member activator
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          SMTP_USERNAME: ${{ secrets.SMTP_USERNAME }}
+          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+        run: |
+          cd scripts && python member_activator.py
+
+      - name: Send alert on failure
+        if: failure()
+        env:
+          SMTP_USERNAME: ${{ secrets.SMTP_USERNAME }}
+          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+        run: |
+          python -c "
+          import smtplib, os
+          from email.mime.text import MIMEText
+          smtp_user = os.environ['SMTP_USERNAME']
+          smtp_pass = os.environ['SMTP_PASSWORD']
+          msg = MIMEText('支付激活工作流執行失敗，請查看 GitHub Actions 日誌。')
+          msg['Subject'] = '[安心借貸網] ❌ 支付激活工作流執行失敗'
+          msg['From'] = smtp_user
+          msg['To'] = 'aijinetwork@gmail.com'
+          with smtplib.SMTP_SSL('smtp.gmail.com', 465) as s:
+              s.login(smtp_user, smtp_pass)
+              s.send_message(msg)
+          print('Alert sent.')
+          "

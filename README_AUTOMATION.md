@@ -4,7 +4,7 @@
 
 这是为 Money-Game 借贷媒介平台搭建的完整自动化工作流系统，包括：
 
-- ✅ **支付自动激活** - 自动验证金主支付并激活会员资格
+- ✅ **支付自动激活** - 監控 `bank_transfer_orders` 狀態變更，自動激活會員並發送三封通知郵件
 - ✅ **周报告生成** - 每周一自动生成会员统计报告
 - ✅ **安全监控** - 实时监控网站安全状态并告警
 
@@ -64,14 +64,18 @@
 Money-Game/
 ├── .github/
 │   └── workflows/
-│       ├── payment-auto-activation.yml    # 支付激活工作流
+│       ├── payment-activation.yml         # 支付激活工作流（每小時）
+│       ├── payment-auto-activation.yml    # (舊) 支付激活工作流
 │       ├── weekly-member-report.yml       # 周报告工作流
 │       └── security-monitor.yml           # 安全监控工作流
 ├── scripts/
+│   ├── member_activator.py               # 會員激活核心腳本
+│   ├── email_sender.py                   # 郵件發送模組（三種郵件類型）
 │   ├── supabase_client.py                # Supabase 连接库
 │   ├── payment_verifier.py               # 支付验证脚本
 │   ├── member_reporter.py                # 报告生成脚本
 │   └── security_checker.py               # 安全检查脚本
+├── .env.example                          # 环境变量示例
 ├── requirements.txt                      # Python 依赖
 └── README_AUTOMATION.md                  # 本文档
 ```
@@ -89,7 +93,7 @@ Money-Game/
 | `SUPABASE_URL` | Supabase 项目 URL | `https://jyqmpfqpmglwnzselafe.supabase.co` |
 | `SUPABASE_SERVICE_ROLE_KEY` | Supabase service_role 密钥 | (从 Supabase 控制面板获取) |
 | `SMTP_USERNAME` | Gmail 邮箱地址 | `your-email@gmail.com` |
-| `SMTP_PASSWORD` | Gmail 应用密码 | (生成应用专用密码) |
+| `SMTP_PASSWORD` | Gmail 应用密码（App Password） | (生成应用专用密码) |
 
 ### 如何获取 Gmail 应用密码？
 
@@ -103,7 +107,39 @@ Money-Game/
 
 ## 🚀 工作流详解
 
-### 1️⃣ 支付自动激活工作流 (`payment-auto-activation.yml`)
+### 1️⃣ 支付自動激活工作流 (`payment-activation.yml`)
+
+**運行頻率：** 每小時執行一次
+
+**觸發條件：** `bank_transfer_orders.status` 從 `pending` 改為 `confirmed`
+
+**處理流程：**
+```
+bank_transfer_orders.status: pending → confirmed
+  ↓
+查詢訂單詳情（用戶信息、plan、金額、有效期等）
+  ↓
+更新 profiles 表：
+  ├─ plan_type = plan_code (flagship/prestige/platinum)
+  ├─ vip_until = NOW() + duration_days（自動計算會員到期日）
+  ├─ carrier_number = 發票載具號碼
+  └─ transfer_last_5_digits = 匯款後五碼
+  ↓
+發送郵件給三個收件人：
+  1️⃣ 管理員（aijinetwork@gmail.com）：支付驗證報告
+  2️⃣ 用戶（profiles.email）：會員激活確認 + 有效期信息
+  3️⃣ 財務人員（qq0987811665qq@gmail.com）：發票開立提醒
+  ↓
+訂單狀態更新為 activated（防止重複處理）
+```
+
+**核心腳本：**
+- `scripts/member_activator.py` - 主流程
+- `scripts/email_sender.py` - 郵件發送模組
+
+---
+
+### 2️⃣ 支付自动激活工作流 (`payment-auto-activation.yml`)
 
 **运行频率：** 每小时执行一次
 
