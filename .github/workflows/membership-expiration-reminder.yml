@@ -1,0 +1,203 @@
+name: Membership Expiration Reminder
+
+on:
+  schedule:
+    # Run daily at 9:00 AM UTC to check for expiring memberships
+    - cron: '0 9 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check-expiring-memberships:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+      
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+      
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      
+      - name: Check expiring memberships
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          LINE_CHANNEL_ACCESS_TOKEN: ${{ secrets.LINE_CHANNEL_ACCESS_TOKEN }}
+        run: |
+          python << 'EOF'
+          import os
+          from datetime import datetime, timedelta
+          from supabase import create_client, Client
+          import requests
+          
+          SUPABASE_URL = os.environ.get("SUPABASE_URL")
+          SUPABASE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
+          LINE_TOKEN = os.environ.get("LINE_CHANNEL_ACCESS_TOKEN")
+          
+          supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+          
+          print("🔔 開始檢查即將到期的會員...")
+          
+          try:
+              today = datetime.utcnow()
+              
+              # 檢查 7 天內到期的會員
+              seven_days_later = today + timedelta(days=7)
+              
+              response = supabase.table("profiles").select(
+                  "id, email, membership_tier, expires_at, line_user_id, line_id"
+              ).eq(
+                  "membership_type", "lender"
+              ).eq(
+                  "payment_verified", "YES"
+              ).not_.is_(
+                  "expires_at", "null"
+              ).lte(
+                  "expires_at", seven_days_later.isoformat()
+              ).gte(
+                  "expires_at", today.isoformat()
+              ).execute()
+              
+              expiring_members = response.data if response.data else []
+              
+              print(f"📋 找到 {len(expiring_members)} 個即將到期的金主會員")
+              
+              if not expiring_members:
+                  print("✅ 沒有即將到期的會員")
+                  exit(0)
+              
+              # 發送提醒給每個即將到期的會員
+              reminded_count = 0
+              for member in expiring_members:
+                  member_id = member["id"]
+                  email = member.get("email", "未知")
+                  tier = member.get("membership_tier", "未知")
+                  expires_at = datetime.fromisoformat(member["expires_at"].replace("Z", "+00:00"))
+                  days_left = (expires_at - today).days
+                  
+                  line_id = member.get("line_user_id") or member.get("line_id")
+                  
+                  tier_names = {
+                      "flagship": "旗艦會員",
+                      "prestige": "尊榮會員", 
+                      "platinum": "鉑金會員"
+                  }
+                  tier_name = tier_names.get(tier, tier)
+                  
+                  print(f"\n會員: {email}")
+                  print(f"  等級: {tier_name}")
+                  print(f"  剩餘天數: {days_left} 天")
+                  print(f"  到期日: {expires_at.strftime('%Y-%m-%d')}")
+                  
+                  # 如果有 LINE ID，發送 LINE 通知
+                  if line_id and LINE_TOKEN:
+                      try:
+                          message = {
+                              "to": line_id,
+                              "messages": [{
+                                  "type": "text",
+                                  "text": f"【安心借貸網 | 會員到期提醒】\n\n您的{tier_name}即將於 {days_left} 天後到期。\n\n到期日：{expires_at.strftime('%Y年%m月%d日')}\n\n如需繼續享受金主會員服務，請儘快續約。\n\n感謝您的支持！"
+                              }]
+                          }
+                          
+                          headers = {
+                              "Authorization": f"Bearer {LINE_TOKEN}",
+                              "Content-Type": "application/json"
+                          }
+                          
+                          response = requests.post(
+                              "https://api.line.me/v2/bot/message/push",
+                              json=message,
+                              headers=headers,
+                              timeout=10
+                          )
+                          
+                          if response.status_code == 200:
+                              print(f"  ✅ LINE 提醒已發送")
+                              reminded_count += 1
+                          else:
+                              print(f"  ⚠️  LINE 提醒發送失敗: {response.status_code}")
+                      except Exception as e:
+                          print(f"  ⚠️  LINE 提醒發送失敗: {e}")
+                  else:
+                      print(f"  ⚠️  無 LINE ID 或 LINE Token，跳過")
+              
+              # 保存統計數據
+              with open("/tmp/expiration_stats.txt", "w", encoding="utf-8") as f:
+                  f.write(f"{len(expiring_members)},{reminded_count}")
+              
+              print(f"\n✅ 任務完成! 發送了 {reminded_count} 個提醒")
+              
+          except Exception as e:
+              print(f"❌ 錯誤: {e}")
+              exit(1)
+          EOF
+      
+      - name: Send summary email
+        if: always()
+        env:
+          SMTP_USERNAME: ${{ secrets.SMTP_USERNAME }}
+          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+          ALERT_EMAIL: ${{ secrets.ALERT_EMAIL }}
+        run: |
+          python << 'EOF'
+          import os
+          import smtplib
+          from email.mime.text import MIMEText
+          from email.mime.multipart import MIMEMultipart
+          from datetime import datetime
+          
+          try:
+              smtp_user = os.environ.get("SMTP_USERNAME")
+              smtp_pass = os.environ.get("SMTP_PASSWORD")
+              alert_email = os.environ.get("ALERT_EMAIL", "aijinetwork@gmail.com")
+              
+              if not smtp_user or not smtp_pass:
+                  print("⚠️  郵件配置未設置，跳過發送報告")
+                  exit(0)
+              
+              # 讀取統計數據
+              try:
+                  with open("/tmp/expiration_stats.txt", "r") as f:
+                      data = f.read().strip().split(",")
+                      expiring_count, reminded_count = data
+              except:
+                  expiring_count, reminded_count = "0", "0"
+              
+              if int(expiring_count) > 0:
+                  msg = MIMEMultipart()
+                  msg['Subject'] = '[Money-Game] 會員到期提醒報告'
+                  msg['From'] = smtp_user
+                  msg['To'] = alert_email
+                  
+                  body = (
+                      "【Money-Game 會員到期提醒報告】\n\n"
+                      f"執行時間：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
+                      f"即將到期會員數：{expiring_count}\n"
+                      f"成功發送提醒：{reminded_count}\n\n"
+                      "請關注會員續約情況。\n\n"
+                      "---\n"
+                      "Money-Game 自動化系統\n"
+                  )
+                  
+                  msg.attach(MIMEText(body, 'plain', 'utf-8'))
+                  
+                  with smtplib.SMTP_SSL('smtp.gmail.com', 465) as server:
+                      server.login(smtp_user, smtp_pass)
+                      server.send_message(msg)
+                  
+                  print("✅ 到期提醒報告已發送")
+              else:
+                  print("✅ 無即將到期的會員，無需發送報告")
+          except Exception as e:
+              print(f"⚠️  發送報告失敗: {e}")
+          EOF

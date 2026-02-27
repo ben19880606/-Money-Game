@@ -16,12 +16,12 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
-          python-version: '3.9'
+          python-version: '3.10'
       
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install supabase python-dotenv requests
+          pip install -r requirements.txt
       
       - name: Send LINE notifications
         env:
@@ -33,6 +33,7 @@ jobs:
           python << 'EOF'
           import os
           import json
+          import time
           from datetime import datetime, timedelta
           import requests
           from supabase import create_client, Client
@@ -41,58 +42,184 @@ jobs:
           SUPABASE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
           LINE_CHANNEL_ACCESS_TOKEN = os.environ.get("LINE_CHANNEL_ACCESS_TOKEN")
           
+          # 驗證必需的環境變量
+          if not SUPABASE_URL or not SUPABASE_KEY:
+              print("❌ 錯誤: 缺少 Supabase 配置")
+              exit(1)
+          
+          if not LINE_CHANNEL_ACCESS_TOKEN:
+              print("❌ 錯誤: 缺少 LINE Channel Access Token")
+              exit(1)
+          
           supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
           LINE_API_ENDPOINT = "https://api.line.me/v2/bot/message/push"
           
-          print("🔄 开始检查新借款...")
+          # 重試配置
+          MAX_RETRIES = 3
+          RETRY_DELAY = 2  # 秒
+          
+          def send_notification_with_retry(line_id, message, max_retries=MAX_RETRIES):
+              """帶重試機制的通知發送"""
+              headers = {
+                  "Authorization": f"Bearer {LINE_CHANNEL_ACCESS_TOKEN}",
+                  "Content-Type": "application/json"
+              }
+              
+              for attempt in range(max_retries):
+                  try:
+                      response = requests.post(
+                          LINE_API_ENDPOINT, 
+                          json=message, 
+                          headers=headers,
+                          timeout=10
+                      )
+                      
+                      if response.status_code == 200:
+                          return True, None
+                      elif response.status_code == 429:
+                          # 速率限制，等待更長時間
+                          time.sleep(RETRY_DELAY * (attempt + 1) * 2)
+                          continue
+                      else:
+                          error_msg = f"HTTP {response.status_code}: {response.text}"
+                          if attempt < max_retries - 1:
+                              time.sleep(RETRY_DELAY * (attempt + 1))
+                              continue
+                          return False, error_msg
+                  except requests.exceptions.Timeout:
+                      if attempt < max_retries - 1:
+                          time.sleep(RETRY_DELAY * (attempt + 1))
+                          continue
+                      return False, "請求超時"
+                  except Exception as e:
+                      if attempt < max_retries - 1:
+                          time.sleep(RETRY_DELAY * (attempt + 1))
+                          continue
+                      return False, str(e)
+              
+              return False, "達到最大重試次數"
+          
+          print("🔄 開始檢查新借款...")
           
           try:
-              # 获取新借款
+              # 獲取新借款
               one_hour_ago = (datetime.utcnow() - timedelta(hours=1)).isoformat()
               response = supabase.table("loan_requests").select(
                   "id, title, amount, description, city, borrower_id, created_at"
               ).eq("status", "pending").gte("created_at", one_hour_ago).execute()
               
               loans = response.data if response.data else []
-              print(f"📋 找到 {len(loans)} 笔新借款")
+              print(f"📋 找到 {len(loans)} 筆新借款")
               
               if not loans:
-                  print("✅ 没有新借款，任务完成")
-              else:
-                  # 获取金主会员
-                  lender_response = supabase.table("profiles").select(
-                      "id, line_id, line_user_id, membership_type"
-                  ).in_("membership_type", ["lender", "旗艦", "尊榮", "鉑金"]).execute()
-                  
-                  lenders = lender_response.data if lender_response.data else []
-                  print(f"👥 找到 {len(lenders)} 个金主会员")
-                  
-                  notification_count = 0
-                  for loan in loans:
-                      for lender in lenders:
-                          line_id = lender.get("line_user_id") or lender.get("line_id")
-                          if line_id:
-                              message = {
-                                  "to": line_id,
-                                  "messages": [{
-                                      "type": "text",
-                                      "text": f"【安心借貸網 | 新借款案件】\n\n案件編號：LR{loan['id']}\n借款金額：${loan['amount']:,}\n地區：{loan['city']}\n用途：{loan['description']}"
-                                  }]
-                              }
-                              
-                              headers = {
-                                  "Authorization": f"Bearer {LINE_CHANNEL_ACCESS_TOKEN}",
-                                  "Content-Type": "application/json"
-                              }
-                              
-                              response = requests.post(LINE_API_ENDPOINT, json=message, headers=headers)
-                              if response.status_code == 200:
-                                  print(f"✅ 通知已发送给 {line_id}")
-                                  notification_count += 1
-                  
-                  print(f"✅ 任务完成! 发送了 {notification_count} 条通知")
+                  print("✅ 沒有新借款，任務完成")
+                  exit(0)
+              
+              # 獲取已驗證支付的金主會員
+              lender_response = supabase.table("profiles").select(
+                  "id, line_id, line_user_id, membership_type, membership_tier"
+              ).eq(
+                  "membership_type", "lender"
+              ).eq(
+                  "payment_verified", "YES"
+              ).execute()
+              
+              lenders = lender_response.data if lender_response.data else []
+              print(f"👥 找到 {len(lenders)} 個已激活的金主會員")
+              
+              if not lenders:
+                  print("⚠️  沒有已激活的金主會員")
+                  exit(0)
+              
+              notification_count = 0
+              failed_count = 0
+              
+              for loan in loans:
+                  for lender in lenders:
+                      line_id = lender.get("line_user_id") or lender.get("line_id")
+                      if not line_id:
+                          continue
+                      
+                      message = {
+                          "to": line_id,
+                          "messages": [{
+                              "type": "text",
+                              "text": f"【安心借貸網 | 新借款案件】\n\n案件編號：LR{loan['id']}\n借款金額：${loan['amount']:,}\n地區：{loan.get('city', '未指定')}\n用途：{loan.get('description', '未提供')}\n\n查看詳情：https://axnihao.com/loan/{loan['id']}"
+                          }]
+                      }
+                      
+                      success, error = send_notification_with_retry(line_id, message)
+                      
+                      if success:
+                          print(f"✅ 通知已發送給 {line_id}")
+                          notification_count += 1
+                          
+                          # 記錄通知
+                          try:
+                              supabase.table("lender_interactions").insert({
+                                  "lender_id": lender["id"],
+                                  "request_id": loan["id"],
+                                  "interaction_type": "notification_sent",
+                                  "interaction_date": datetime.utcnow().isoformat()
+                              }).execute()
+                          except Exception as e:
+                              print(f"⚠️  記錄通知失敗: {e}")
+                      else:
+                          print(f"❌ 發送失敗給 {line_id}: {error}")
+                          failed_count += 1
+                      
+                      # 避免速率限制
+                      time.sleep(0.1)
+              
+              print(f"\n✅ 任務完成!")
+              print(f"   成功發送: {notification_count} 條通知")
+              if failed_count > 0:
+                  print(f"   發送失敗: {failed_count} 條通知")
+              
+              # 如果失敗率過高，返回錯誤
+              if failed_count > notification_count:
+                  print("⚠️  警告: 失敗通知數量超過成功數量")
+                  exit(1)
           
           except Exception as e:
-              print(f"❌ 错误: {e}")
+              print(f"❌ 錯誤: {e}")
+              import traceback
+              traceback.print_exc()
               exit(1)
+          EOF
+      
+      - name: Send alert on failure
+        if: failure()
+        env:
+          SMTP_USERNAME: ${{ secrets.SMTP_USERNAME }}
+          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+          ALERT_EMAIL: ${{ secrets.ALERT_EMAIL }}
+        run: |
+          python << 'EOF'
+          import os
+          import smtplib
+          from email.mime.text import MIMEText
+          from datetime import datetime
+          
+          try:
+              smtp_user = os.environ.get("SMTP_USERNAME")
+              smtp_pass = os.environ.get("SMTP_PASSWORD")
+              alert_email = os.environ.get("ALERT_EMAIL", "aijinetwork@gmail.com")
+              
+              if not smtp_user or not smtp_pass:
+                  print("⚠️  郵件配置未設置，跳過發送告警")
+                  exit(0)
+              
+              msg = MIMEText(f'借款通知工作流執行失敗！\n\n時間：{datetime.now().strftime("%Y-%m-%d %H:%M:%S")}\n\n請檢查 GitHub Actions 日誌。')
+              msg['Subject'] = '❌ [Money-Game] 借款通知失敗'
+              msg['From'] = smtp_user
+              msg['To'] = alert_email
+              
+              with smtplib.SMTP_SSL('smtp.gmail.com', 465) as server:
+                  server.login(smtp_user, smtp_pass)
+                  server.send_message(msg)
+              
+              print("✅ 告警郵件已發送")
+          except Exception as e:
+              print(f"⚠️  發送告警失敗: {e}")
           EOF
